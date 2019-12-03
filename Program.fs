@@ -1,9 +1,5 @@
 ﻿open System.Reflection
 
-type Arguments =
-    | Test of string
-    | Run of string
-    | Failure of string
 
 type ExecutionResult =
     | Success
@@ -27,26 +23,27 @@ let execute moduleName methodName =
 
 
 let problems =
-    [ 1..1 ]
-    |> List.collect (fun n -> [ 'a' .. 'b' ] |> List.map (fun c -> sprintf "Problem%02d%c" n c))
-
+    let assembly = Assembly.GetExecutingAssembly()
+    assembly.GetTypes()
+        |> Array.filter (fun t -> t.Name.StartsWith("Problem"))
+        |> Array.map (fun t -> t.Name)
+        |> Set.ofArray
 
 
 [<EntryPoint>]
 let main argv =
-
+    printfn "Problems loaded: %s" <| System.String.Join(",", problems)
     let result =
         match argv with
-        | [| str ; "test" |] when List.contains str problems ->
+        | [| str ; "test" |] when Set.contains str problems ->
             execute str "test"
-        | [| str ; "run" |] when List.contains str problems ->
+        | [| str ; "run" |] when Set.contains str problems ->
             execute str "run"
-        | [| str |] when List.contains str problems ->
+        | [| str |] when Set.contains str problems ->
             execute str "run"
         | [| |] ->
-            execute (problems |> List.last) "run"
-        | _ -> Failure "Invalid parameters"
-
+            execute (problems |> Set.maxElement) "run"
+        | _ -> Failure <| sprintf "Invalid parameters: %A" argv
     match result with
     | Success -> 0
     | Failure msg ->
