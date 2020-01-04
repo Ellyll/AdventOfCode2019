@@ -4,7 +4,7 @@ type ParameterMode =
     | Immediate
     | Position
 
-type State = { Memory: Map<int,int> ; Ptr: int ; FetchInput: (unit->int) list ; Output: int option ; IsHalted: bool }
+type State = { Memory: Map<int,int> ; Ptr: int ; InputBuffer: int list ; Output: int option ; IsHalted: bool }
 
 
 let getData () =
@@ -45,20 +45,11 @@ let setValue value location (state: State) =
     { state with Memory = newMemory }
 
 
-//let getInput state =
-    //Seq.tryExactlyOne state.Inputs
-    // match state.Inputs with
-    // | x::rest ->
-    //     (Some x, { state with Inputs = rest })
-    // | _ -> None, state
 let getInput state =
-    match state.FetchInput with
-    | [x] ->
-        x (), state // Only one function left, so keep it and state doesn't change
+    match state.InputBuffer with
+    | [] -> None, state
     | x::rest ->
-        x (), { state with FetchInput = rest }
-    | [] -> failwithf "Unable to get input for state %A" state
-
+        Some x, { state with InputBuffer = rest }
 
 
 let setOutput value (state: State) =
@@ -87,13 +78,11 @@ let execute (state: State) : State =
             let newState = setValue (a * b) m.[p+3] state
             { newState with Ptr = p + 4 }
         | 3 -> // Input
-            // let input, state' =
-            //     match getInput state with
-            //     | Some x, st -> x, st
-            //     | None, _ -> failwithf "No input available for state %A" state
-            // let newState = setValue input m.[p+1] state'
-            let input, newState = getInput state
-            { newState with Ptr = p + 2 }
+            match getInput state with
+            | Some value, state' ->
+                let state'' = setValue value m.[p+1] state'
+                { state'' with Ptr = p + 2 }
+            | None, _ -> state
         | 4 -> // Output
             let value = getValue m.[p+1] (getParameterMode digits.[2]) state
             let newState = setOutput value state
@@ -146,19 +135,31 @@ let getResultForPhaseSetting (phaseSetting: int []) instructions =
         | None -> 0
     let rec amps =
         [|
-            { Memory = instructions ; Ptr = 0 ; FetchInput = [ (fun () -> phaseSetting.[0]) ; (fun () -> getInput 4 amps) ] ; Output = None ; IsHalted = false }
-            { Memory = instructions ; Ptr = 0 ; FetchInput = [ (fun () -> phaseSetting.[1]) ; (fun () -> getInput 0 amps) ] ; Output = None ; IsHalted = false }
-            { Memory = instructions ; Ptr = 0 ; FetchInput = [ (fun () -> phaseSetting.[2]) ; (fun () -> getInput 1 amps) ] ; Output = None ; IsHalted = false }
-            { Memory = instructions ; Ptr = 0 ; FetchInput = [ (fun () -> phaseSetting.[3]) ; (fun () -> getInput 2 amps) ] ; Output = None ; IsHalted = false }
-            { Memory = instructions ; Ptr = 0 ; FetchInput = [ (fun () -> phaseSetting.[4]) ; (fun () -> getInput 3 amps) ] ; Output = None ; IsHalted = false }
+            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[0] ; 0 ] ; Output = None ; IsHalted = false }
+            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[1] ] ; Output = None ; IsHalted = false }
+            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[2] ] ; Output = None ; IsHalted = false }
+            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[3] ] ; Output = None ; IsHalted = false }
+            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[4] ] ; Output = None ; IsHalted = false }
         |]
+    let mutable lastOutput : int option = None
     while (not (amps |> Array.forall (fun x -> x.IsHalted))) do
         for i in 0..4 do
-            amps.[i] <- execute amps.[i]
-    amps.[4].Output // Amp E
+            let state' = execute amps.[i]
+            let state'' =
+                match state'.Output with
+                | Some x ->
+                    let j = ((i+1) % 5)
+                    amps.[j] <- { amps.[j] with InputBuffer = amps.[j].InputBuffer @ [x] }
+                    if i = 4 then
+                        lastOutput <- Some x
+                    { state' with Output = None }
+                | None ->
+                    state'            
+            amps.[i] <- state''
+    lastOutput // Amp E
+
 
 let getResult phaseSettingsPerumations instructions =
-    //let phaseSettings = [ 4 ; 3 ; 2 ; 1 ; 0 ]
     phaseSettingsPerumations
     |> Seq.map(fun phaseSettings ->
             phaseSettings,
@@ -171,7 +172,7 @@ let getResult phaseSettingsPerumations instructions =
 
 let test () =
     [
-         [| 3;26;1001;26;-4;26;3;27;1002;27;2;27;1;27;26;27;4;27;1001;28;-1;28;1005;28;6;99;0;0;5 |], seq { [ 9;8;7;6;5] }, 139629729
+         [| 3;26;1001;26;-4;26;3;27;1002;27;2;27;1;27;26;27;4;27;1001;28;-1;28;1005;28;6;99;0;0;5 |], seq { [ 9;8;7;6;5 ] }, 139629729
          [| 3;52;1001;52;-5;52;3;53;1;52;56;54;1007;54;5;55;1005;55;26;1001;54;-5;54;1105;1;12;1;53;54;53;1008;54;0;55;1001;55;1;55;2;53;55;53;4;53;1001;56;-1;56;1005;56;6;99;0;0;0;0;10 |], seq { [ 9;7;8;5;6 ]}, 18216
     ]
     |> List.iter (fun (program, phaseSettings, expected) ->
@@ -188,6 +189,6 @@ let test () =
 
 let run () =
     let instructions = getData()
-    let result = getResult (permutations [ 0;1;2;3;4 ]) instructions    
+    let result = getResult (permutations [ 9;8;7;6;5 ]) instructions    
     printfn "Result: %A"  result
     ()
