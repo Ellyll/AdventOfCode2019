@@ -101,7 +101,7 @@ let execute (state: State) : State =
                 { state with Ptr = p2 }
             else
                 { state with Ptr = p + 3 }
-        | 7 -> // less then
+        | 7 -> // less than
             let p1 = getValue m.[p+1] (getParameterMode digits.[2]) state
             let p2 = getValue m.[p+2] (getParameterMode digits.[1]) state
             let value = if p1 < p2 then 1 else 0
@@ -129,34 +129,44 @@ let rec permutations = function
     | x :: xs -> Seq.collect (insertions x) (permutations xs)
 
 let getResultForPhaseSetting (phaseSetting: int []) instructions =
-    let getInput i (amps: State []) =
-        match amps.[i].Output with
-        | Some x -> x
-        | None -> 0
-    let rec amps =
-        [|
-            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[0] ; 0 ] ; Output = None ; IsHalted = false }
-            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[1] ] ; Output = None ; IsHalted = false }
-            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[2] ] ; Output = None ; IsHalted = false }
-            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[3] ] ; Output = None ; IsHalted = false }
-            { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[4] ] ; Output = None ; IsHalted = false }
-        |]
-    let mutable lastOutput : int option = None
-    while (not (amps |> Array.forall (fun x -> x.IsHalted))) do
-        for i in 0..4 do
-            let state' = execute amps.[i]
-            let state'' =
-                match state'.Output with
-                | Some x ->
-                    let j = ((i+1) % 5)
-                    amps.[j] <- { amps.[j] with InputBuffer = amps.[j].InputBuffer @ [x] }
-                    if i = 4 then
-                        lastOutput <- Some x
-                    { state' with Output = None }
-                | None ->
-                    state'            
-            amps.[i] <- state''
-    lastOutput // Amp E
+    let executeAmp (lastOutput, amps) n _ =
+        let state' = execute (amps |> Map.find n)
+        let amps' =
+            amps
+            |> Map.remove n
+            |> Map.add n { state' with Output = None }
+        let lastOutput'', amps'' =
+            match state'.Output with
+            | None -> lastOutput, amps'
+            | Some x ->
+                let j = ((n+1) % 5)
+                let linkedAmp = amps' |> Map.find j
+                let lastOutput' = if n = 4 then Some x else lastOutput // keep output if Amp E (4)
+                (
+                    lastOutput',
+                    amps'
+                    |> Map.remove j
+                    |> Map.add j { linkedAmp with InputBuffer = linkedAmp.InputBuffer @ [x] }
+                )
+        (lastOutput'', amps'')
+
+    let rec runAmps (lastOutput: int option) amps =
+        if (amps |> Map.forall (fun _ v -> v.IsHalted)) then
+            lastOutput
+        else
+            let (lastOutput', amps') = amps |> Map.fold (executeAmp) (lastOutput, amps)
+            runAmps lastOutput' amps'
+
+    let amps =
+        [
+            0, { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[0] ; 0 ] ; Output = None ; IsHalted = false }
+            1, { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[1] ] ; Output = None ; IsHalted = false }
+            2, { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[2] ] ; Output = None ; IsHalted = false }
+            3, { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[3] ] ; Output = None ; IsHalted = false }
+            4, { Memory = instructions ; Ptr = 0 ; InputBuffer = [ phaseSetting.[4] ] ; Output = None ; IsHalted = false }
+        ] |> Map.ofList
+
+    runAmps None amps
 
 
 let getResult phaseSettingsPerumations instructions =
