@@ -22,6 +22,7 @@
     <Compile Include="Problem07/Problem07b.fs" />
     <Compile Include="Problem08/Problem08a.fs" />
     <Compile Include="Problem08/Problem08b.fs" />
+    <Compile Include="Problem09/Problem09a.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
