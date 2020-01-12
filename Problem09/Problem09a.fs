@@ -14,6 +14,7 @@ type IntCodeProcessorStatus =
 type IntCodeProcessorMessage =
     | Input of int64
     | FetchStatus of AsyncReplyChannel<IntCodeProcessorStatus>
+    | FetchState of AsyncReplyChannel<State>
     | Die
 
 type OutputCollectorMessage =
@@ -34,7 +35,7 @@ let getParameterMode (digit: char) =
     match digit with
     | '2' -> Relative
     | '1' -> Immediate
-    | ' '
+    | ' ' -> Position
     | '0' -> Position
     | _ -> failwithf "Unknown parameter mode: %c" digit
 
@@ -54,7 +55,12 @@ let getValue parameter parameterMode (state: State) =
     | Relative -> getValueFromLocation (parameter+state.RelativeBaseOffset) state
 
 
-let setValue value location (state: State) =
+let setValue value parameter parameterMode (state: State) =
+    let location =
+        match parameterMode with
+        | Immediate -> failwithf "Unexpected Immediate parameter mode at Ptr=%d" state.Ptr
+        | Position -> parameter
+        | Relative -> state.RelativeBaseOffset + parameter
     if Map.containsKey location state.Memory then
         { state with Memory = state.Memory |> Map.remove location |> Map.add location value }
     else
@@ -86,17 +92,17 @@ let execute (state: State) : State =
         | 1 -> // Add
             let a = getValue m.[p+1L] (getParameterMode digits.[2]) state
             let b = getValue m.[p+2L] (getParameterMode digits.[1]) state
-            let newState = setValue (a + b) m.[p+3L] state
+            let newState = setValue (a + b) m.[p+3L] (getParameterMode digits.[0]) state
             { newState with Ptr = p + 4L }
         | 2 -> // Multiply
             let a = getValue m.[p+1L] (getParameterMode digits.[2]) state
             let b = getValue m.[p+2L] (getParameterMode digits.[1]) state
-            let newState = setValue (a * b) m.[p+3L] state
+            let newState = setValue (a * b) m.[p+3L] (getParameterMode digits.[0]) state
             { newState with Ptr = p + 4L }
         | 3 -> // Input
             match getInput state with
             | Some value, state' ->
-                let state'' = setValue value m.[p+1L] state'
+                let state'' = setValue value m.[p+1L] (getParameterMode digits.[2]) state'
                 { state'' with Ptr = p + 2L }
             | None, _ -> state
         | 4 -> // Output
@@ -121,17 +127,18 @@ let execute (state: State) : State =
             let p1 = getValue m.[p+1L] (getParameterMode digits.[2]) state
             let p2 = getValue m.[p+2L] (getParameterMode digits.[1]) state
             let value = if p1 < p2 then 1L else 0L
-            let newState = setValue value m.[p+3L] state
+            let newState = setValue value m.[p+3L] (getParameterMode digits.[0]) state
             { newState with Ptr = p + 4L }
         | 8 -> // equals
             let p1 = getValue m.[p+1L] (getParameterMode digits.[2]) state
             let p2 = getValue m.[p+2L] (getParameterMode digits.[1]) state
             let value = if p1 = p2 then 1L else 0L
-            let newState = setValue value m.[p+3L] state
+            let newState = setValue value m.[p+3L] (getParameterMode digits.[0]) state
             { newState with Ptr = p + 4L }
         | 9 -> // adjusts the relative base
             let p1 = getValue m.[p+1L] (getParameterMode digits.[2]) state
-            { state with RelativeBaseOffset = state.RelativeBaseOffset+p1 ; Ptr = p + 2L }
+            let newRbo = state.RelativeBaseOffset+p1
+            { state with RelativeBaseOffset = newRbo ; Ptr = p + 2L }
         | 99 -> // Halt
             { state with IsHalted = true }
         | _ ->
@@ -151,6 +158,9 @@ let createIntCodeProcessor initialState outputHandler =
                     | FetchStatus reply ->
                         let status = if state.IsHalted then Halted else Running
                         reply.Reply status
+                        return! loop state
+                    | FetchState reply ->
+                        reply.Reply state
                         return! loop state
                     | IntCodeProcessorMessage.Die -> return ()
                 | None -> // No messages so continue execution as normal                    
@@ -173,12 +183,12 @@ let getResult inputs instructions =
             async {
                 let! msg = inbox.Receive()
                 match msg with
-                | Fetch reply ->
+                | OutputCollectorMessage.Fetch reply ->
                     reply.Reply (outputs |> List.rev)
                     return! loop outputs
-                | Add n ->
+                | OutputCollectorMessage.Add n ->
                     return! loop (n::outputs)
-                | Die ->
+                | OutputCollectorMessage.Die ->
                     return ()
             }
         loop []
