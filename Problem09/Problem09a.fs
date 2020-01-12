@@ -7,6 +7,20 @@ type ParameterMode =
 
 type State = { Memory: Map<int64,int64> ; Ptr: int64 ; RelativeBaseOffset: int64 ; InputBuffer: int64 list ; Output: int64 option ; IsHalted: bool }
 
+type IntCodeProcessorStatus =
+    | Running
+    | Halted
+
+type IntCodeProcessorMessage =
+    | Input of int64
+    | FetchStatus of AsyncReplyChannel<IntCodeProcessorStatus>
+    | Die
+
+type OutputCollectorMessage =
+    | Fetch of AsyncReplyChannel<int64 list>
+    | Add of int64
+    | Die
+
 
 let getData () =
     let data =
@@ -123,19 +137,63 @@ let execute (state: State) : State =
         | _ ->
             failwithf "execution failed, invalid opcode %d at position %d" opCode p
 
+
+let createIntCodeProcessor initialState outputHandler =
+    MailboxProcessor.Start (fun inbox ->
+        let rec loop state =
+            async {
+                let timeout = if state.IsHalted then 100 else 0
+                let! msg = inbox.TryReceive timeout
+                match msg with
+                | Some m ->
+                    match m with
+                    | Input n -> return! loop { state with InputBuffer = state.InputBuffer @ [ n ] }
+                    | FetchStatus reply ->
+                        let status = if state.IsHalted then Halted else Running
+                        reply.Reply status
+                        return! loop state
+                    | IntCodeProcessorMessage.Die -> return ()
+                | None -> // No messages so continue execution as normal                    
+                    let state'' = execute state
+                    let state''' =
+                        match state''.Output with
+                        | Some n ->
+                            outputHandler n
+                            { state'' with Output = None }
+                        | None -> state''                    
+                    return! loop state'''
+            }
+        loop initialState
+        )
+
+
 let getResult inputs instructions =
-    let rec runProgram outputs state =
-        if state.IsHalted then
+    let outputCollector = MailboxProcessor.Start(fun inbox ->
+        let rec loop outputs =
+            async {
+                let! msg = inbox.Receive()
+                match msg with
+                | Fetch reply ->
+                    reply.Reply (outputs |> List.rev)
+                    return! loop outputs
+                | Add n ->
+                    return! loop (n::outputs)
+                | Die ->
+                    return ()
+            }
+        loop []
+        )
+    let initalState = { Memory = instructions ; Ptr = 0L ; RelativeBaseOffset = 0L; InputBuffer = inputs ; Output = None ; IsHalted = false }
+    let processor = createIntCodeProcessor initalState (Add >> outputCollector.Post)
+    let rec waitLoop () =
+        if (processor.PostAndReply FetchStatus) = Halted then
+            let outputs = outputCollector.PostAndReply Fetch
+            processor.Post IntCodeProcessorMessage.Die
+            outputCollector.Post OutputCollectorMessage.Die
             outputs
         else
-            let state' = execute state        
-            let outputs' =
-                match state'.Output with
-                | Some x -> x::outputs
-                | None -> outputs
-            runProgram outputs' { state' with Output = None }
-    runProgram [] { Memory = instructions ; Ptr = 0L ; RelativeBaseOffset = 0L; InputBuffer = inputs ; Output = None ; IsHalted = false }
-    |> List.rev
+            waitLoop ()
+    waitLoop ()
 
 
 let test () =
